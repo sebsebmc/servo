@@ -4,7 +4,7 @@
 
 //! A thread that takes a URL and streams back the binary data.
 
-use std::borrow::ToOwned;
+use std::borrow::{Cow, ToOwned};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader};
@@ -20,7 +20,7 @@ use devtools_traits::DevtoolsControlMsg;
 use embedder_traits::EmbedderProxy;
 use hyper_serde::Serde;
 use ipc_channel::ipc::{self, IpcReceiver, IpcReceiverSet, IpcSender};
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
 use net_traits::blob_url_store::parse_blob_url;
 use net_traits::filemanager_thread::FileTokenCheck;
 use net_traits::pub_domains::public_suffix_list_size_of;
@@ -449,13 +449,15 @@ impl ResourceChannelManager {
                 }
             },
             CoreResourceMsg::SetCookieForUrlAsync(cookie_store_id, url, cookie, source) => {
-                self.resource_manager.set_cookie_for_url(
-                    &url,
-                    cookie.into_inner().to_owned(),
-                    source,
-                    http_state,
-                );
-                self.send_cookie_response(cookie_store_id, CookieData::Set(Ok(())));
+                if let Ok(normalized) = self.resource_manager.normalize_cookie(cookie.into_inner())
+                {
+                    self.resource_manager
+                        .set_cookie_for_url(&url, normalized, source, http_state);
+                    self.send_cookie_response(cookie_store_id, CookieData::Set(Ok(())));
+                } else {
+                    info!("Invalid cookie");
+                    self.send_cookie_response(cookie_store_id, CookieData::Set(Err(())));
+                }
             },
             CoreResourceMsg::GetCookiesForUrl(url, consumer, source) => {
                 let mut cookie_jar = http_state.cookie_jar.write();
@@ -618,6 +620,49 @@ impl CoreResourceManager {
         self.thread_pool.exit();
 
         debug!("Exited CoreResourceManager");
+    }
+
+    fn normalize_cookie(&self, cookie: Cookie<'static>) -> Result<Cookie<'static>, ()> {
+        // 1. Normalize name
+        // 2. Normalize value
+        let mut inherited = Cookie::build(cookie.clone());
+        inherited.inner_mut().set_name(Cow::from(
+            cookie.name().trim_matches(['\t', ' ']).to_owned(),
+        ));
+        inherited.inner_mut().set_value(Cow::from(
+            cookie.value().trim_matches(['\t', ' ']).to_owned(),
+        ));
+        let normalized = inherited.build();
+
+        // 3.
+
+        // 4. If name contains U+003D (=), then return failure.
+        if normalized.name().contains('=') {
+            return Err(());
+        }
+
+        // 5. If name’s length is 0:
+        if normalized.name().is_empty() {
+            // If value contains U+003D (=), then return failure.
+            if normalized.value().contains('=') {
+                return Err(());
+            }
+
+            // If value’s length is 0, then return failure.
+            if normalized.value().is_empty() {
+                return Err(());
+            }
+
+            let lowercase_value = normalized.value().to_ascii_lowercase();
+            if lowercase_value.starts_with("__host-") ||
+                lowercase_value.starts_with("__host-http-") ||
+                lowercase_value.starts_with("__http-") ||
+                lowercase_value.starts_with("__secure-")
+            {
+                return Err(());
+            }
+        }
+        Ok(normalized)
     }
 
     fn set_cookie_for_url(

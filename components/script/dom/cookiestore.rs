@@ -88,7 +88,13 @@ impl CookieListener {
                         .collect_vec(),
                     CanGc::note());
                 },
-                CookieData::Delete(_) | CookieData::Change(_) | CookieData::Set(_) => {
+                CookieData::Set(result) => {
+                    match result {
+                        Ok(()) => promise.resolve_native(&(), CanGc::note()),
+                        Err(()) => promise.reject_error(Error::Type("Invalid cookie".to_string()), CanGc::note()),
+                    }
+                },
+                CookieData::Delete(_) | CookieData::Change(_) => {
                     promise.resolve_native(&(), CanGc::note());
                 }
             }
@@ -578,6 +584,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
 
 impl Drop for CookieStore {
     fn drop(&mut self) {
+        // TODO: This currently panics when closing a browsing context
         let res = self
             .unregister_channel
             .send(CoreResourceMsg::RemoveCookieListener(self.store_id));

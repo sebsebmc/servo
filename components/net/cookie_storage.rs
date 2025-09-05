@@ -224,9 +224,13 @@ impl CookieStorage {
         // 3. For each cookie in cookie-list, run these steps:
         // 3.2. If name is given, then run these steps:
         if let Some(name) = name {
+            // 3.2.1. Normalize name: remove all U+0009 TAB and U+0020 SPACE that are at the start or end of input.
+            let normalized_name = name.trim_matches(['\t', ' ']);
             // Let cookieName be the result of running UTF-8 decode without BOM on cookie’s name.
             // If cookieName does not equal name, then continue.
-            cookie_list.filter(|cookie| cookie.name() == name).collect()
+            cookie_list
+                .filter(|cookie| cookie.name() == normalized_name)
+                .collect()
         } else {
             cookie_list.collect()
         }
